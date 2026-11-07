@@ -48,6 +48,11 @@ public class MainActivityTest {
         onView(withText("Count: 1")).check(matches(isDisplayed()));
     }
 
+    @Test public void deliberatelyBroken() {   // temporary: checks the failure video
+        onView(withText("Add one")).perform(click());
+        onView(withText("Count: 99")).check(matches(isDisplayed()));
+    }
+
     @Test public void saysHello() {
         onView(withContentDescription("name box")).perform(typeText("Himanshu"));
         closeSoftKeyboard();
