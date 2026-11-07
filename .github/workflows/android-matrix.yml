@@ -1,0 +1,91 @@
+name: Android Matrix (104 devices)
+
+# Tests your app on 13 Android versions x 8 device types = 104 emulators.
+# GitHub runs about 20 at a time on a free account, the rest wait in line.
+# Actions tab -> "Android Matrix (104 devices)" -> "Run workflow".
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "What to run on every device"
+        type: choice
+        options: [monkey, instrument, maestro]
+        default: monkey
+      events:
+        description: "Random events per device (monkey mode)"
+        default: "4000"
+
+jobs:
+  test:
+    name: Android API ${{ matrix.api }} - ${{ matrix.device }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        # API 24 = Android 7.0 ... API 36 = Android 16
+        api: [24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36]
+        device: [pixel, pixel_xl, pixel_3a, pixel_4, pixel_6, pixel_7, pixel_c, pixel_tablet]
+    env:
+      MODE: ${{ github.event.inputs.mode || 'monkey' }}
+      EVENTS: ${{ github.event.inputs.events || '4000' }}
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Enable KVM (fast emulator)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install Maestro
+        if: env.MODE == 'maestro'
+        run: |
+          curl -Ls "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      - name: Run test bot
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api }}
+          target: google_apis
+          arch: x86_64
+          profile: ${{ matrix.device }}
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: python3 test_bot.py ${{ env.MODE }} --apk apks/app.apk $( [ -f apks/test.apk ] && echo --test-apk apks/test.apk ) --flows flows --events ${{ env.EVENTS }} --out test-results
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-api${{ matrix.api }}-${{ matrix.device }}
+          path: test-results/
+
+  summary:
+    name: Summary of all devices
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: all
+      - name: Build one table of all results
+        run: |
+          python3 - <<'EOF'
+          import json, glob, os
+          rows = []
+          for d in sorted(glob.glob("all/report-*")):
+              files = glob.glob(f"{d}/**/results.json", recursive=True)
+              res = json.load(open(files[0])) if files else []
+              p = sum(r["status"] == "passed" for r in res)
+              f = sum(r["status"] in ("failed", "error") for r in res)
+              status = "✅" if res and not f else ("❌" if res else "⚠️ did not run")
+              rows.append(f"| {os.path.basename(d)[7:]} | {status} | {p} | {f} |")
+          out = "## Results on every device\n\n| Device | Result | Passed | Failed |\n|---|---|---|---|\n" + "\n".join(rows)
+          open(os.environ["GITHUB_STEP_SUMMARY"], "a").write(out + "\n")
+          print(out)
+          EOF

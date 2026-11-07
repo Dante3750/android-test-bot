@@ -17,6 +17,15 @@ It can run on your own PC, or on GitHub's servers with 4 emulators at once.
 Your tests are split across 4 emulators, so 4,000 tests run as 4 groups of about 1,000 at the same time.
 To use more, edit `part: [0, 1, 2, 3]` and `PARTS: 4` in `.github/workflows/android-tests.yml`.
 
+## Test on 104 devices at once
+
+The **Android Matrix (104 devices)** workflow runs your app on 13 Android versions
+(Android 7 to 16, API 24–36) × 8 device types (small and large phones, tablets).
+Actions tab → **Android Matrix (104 devices)** → **Run workflow**.
+
+When it's done, the run page shows one table with ✅ or ❌ for every device, and you can download each device's report.
+A free account runs about 20 emulators at a time, so all 104 take roughly 1–2 hours.
+
 ## Run it on your PC
 
 Needs Android Studio (with an emulator created in Device Manager) and Python 3.
