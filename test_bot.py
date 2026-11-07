@@ -108,8 +108,19 @@ def wait_for_boot(serial, timeout=600):
 POPUP_WORDS = ("Not Responding", "isn't responding", "keeps stopping", "has stopped", "Application Error")
 
 def current_focus(serial):
+    """Names of the windows that have focus, e.g. 'Application Not Responding: com.google.android.gms'."""
+    import re
     out = adb(serial, "shell", "dumpsys window | grep -E 'mCurrentFocus'", timeout=30).stdout
-    return " ".join(out.split())[:200]
+    names = re.findall(r"Window\{\S+ u\d+ ([^}]*)\}", out)
+    return " | ".join(dict.fromkeys(names)) or " ".join(out.split())[:200]
+
+def quiet_device(serial):
+    """Stop "app isn't responding" and crash popups from appearing during tests.
+    On slow emulators, Google's own apps often stop responding; their popup covers the app
+    under test and every UI test fails with RootViewWithoutFocusException. Crashes of the
+    app under test are still reported by the test runner and in logcat."""
+    adb(serial, "shell", "settings", "put", "global", "hide_error_dialogs", "1", timeout=30)
+    adb(serial, "shell", "settings", "put", "secure", "anr_show_background", "0", timeout=30)
 
 def settle(serial, timeout=60):
     """Close system popups ("System UI isn't responding", "Launcher keeps stopping", ...)
@@ -485,6 +496,7 @@ def main():
             if a.test_apk:
                 install(s, a.test_apk)
             adb(s, "logcat", "-c", timeout=30)
+            quiet_device(s)
             settle(s)
         app_pkgs = third_party_packages(serials[0]) - before
 

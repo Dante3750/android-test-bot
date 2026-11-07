@@ -173,3 +173,14 @@ def test_quarantine_matching():
     assert test_bot.is_quarantined("com.y.SettingsTest#anything", e)
     assert test_bot.is_quarantined("com.z.P#add[a_1_2]", e)
     assert not test_bot.is_quarantined("com.z.MyP#add", e)
+
+
+def test_error_popups_are_switched_off(tmp_path):
+    code, out, res = run_bot(tmp_path, "all_pass", "instrument", "--test-apk", "test.apk")
+    assert code == 0, out
+    assert "settings put global hide_error_dialogs 1" in (tmp_path / "state.calls").read_text()
+
+
+def test_popup_name_is_readable(tmp_path):
+    code, out, res = run_bot(tmp_path, "anr_popup", "instrument", "--test-apk", "test.apk")
+    assert "closing system popup: Application Not Responding: com.android.systemui" in out, out

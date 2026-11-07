@@ -226,6 +226,8 @@ jobs:
           target: ${{ matrix.target }}
           arch: ${{ matrix.arch }}
           profile: ${{ matrix.device }}
+          cores: 3              # GitHub runners have 4; the default 2 starves Google's apps into "not responding"
+          ram-size: 4096M
           disable-animations: true
           emulator-boot-timeout: 300
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
@@ -241,6 +243,8 @@ jobs:
           target: ${{ matrix.target }}
           arch: ${{ matrix.arch }}
           profile: ${{ matrix.device }}
+          cores: 3              # GitHub runners have 4; the default 2 starves Google's apps into "not responding"
+          ram-size: 4096M
           disable-animations: true
           emulator-boot-timeout: 300
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -wipe-data
