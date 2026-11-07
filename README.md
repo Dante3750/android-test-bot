@@ -131,3 +131,7 @@ Results go to `test-results/<date>/`. Exit code: `0` all passed (flaky allowed),
 ## Working on the bot
 
 `python -m pytest tests -q` runs the bot's self-tests against a fake device in a few seconds. The **Bot self-check** workflow runs them, plus a lint of every workflow, on every push.
+
+## Versions
+
+Apps use `@v1`, a branch that always points at the latest tested 1.x version. To release a change: push it to `main`, wait for **Bot self-check** and a **Android Matrix (many devices)** run to pass, then move `v1` forward with `git push origin main:v1`. A change that would break existing callers goes to a new `v2` branch instead.
