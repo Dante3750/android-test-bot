@@ -60,6 +60,10 @@ on:
         description: "Most emulators running at the same time"
         type: number
         default: 20
+      device-timeout:
+        description: "Minutes one emulator may take to boot and run its tests before it is stopped and retried on a fresh emulator (up to 50)"
+        type: number
+        default: 40
       bot-ref:
         description: "Which version of the bot to use (tag, branch or commit)"
         type: string
@@ -142,6 +146,10 @@ jobs:
               # Google publishes no x86_64 "Google APIs" image for API 27, so use the plain Android one.
               d.setdefault("target", "default" if d["api"] == 27 else "google_apis")
               d.setdefault("arch", "x86_64")
+              # Android 8+ gets more CPU and RAM (fewer "isn't responding" popups); Android 7/7.1 images
+              # hang during boot with more than the default, so they keep it.
+              d.setdefault("cores", 2 if d["api"] <= 25 else 3)
+              d.setdefault("ram", "" if d["api"] <= 25 else "4096M")
           jobs = [dict(d, part=p, parts=shards) for d in devs for p in range(shards)]
           if len(jobs) > 256:
               sys.exit(f"{len(jobs)} jobs is more than GitHub's limit of 256. Use fewer devices or shards.")
@@ -220,22 +228,32 @@ jobs:
       - name: Run test bot
         id: run1
         continue-on-error: true
+        timeout-minutes: ${{ inputs.device-timeout }}
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ matrix.api }}
           target: ${{ matrix.target }}
           arch: ${{ matrix.arch }}
           profile: ${{ matrix.device }}
-          cores: 3              # GitHub runners have 4; the default 2 starves Google's apps into "not responding"
-          ram-size: 4096M
+          cores: ${{ matrix.cores }}
+          ram-size: ${{ matrix.ram }}
           disable-animations: true
           emulator-boot-timeout: 300
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
           script: python3 .android-test-bot/test_bot.py $BOT_ARGS
 
       # The emulator never started or the install broke (no tests ran): start a fresh emulator once.
+      - name: Stop the stuck emulator
+        if: steps.run1.outcome == 'failure' && hashFiles('test-results/TESTS_RAN') == ''
+        run: |
+          pkill -9 -f qemu-system || true
+          pkill -9 -f "emulator -port" || true
+          "$ANDROID_HOME/platform-tools/adb" kill-server || true
+          sleep 3
+
       - name: Retry with a fresh emulator
         id: run2
+        timeout-minutes: ${{ inputs.device-timeout }}
         if: steps.run1.outcome == 'failure' && hashFiles('test-results/TESTS_RAN') == ''
         uses: reactivecircus/android-emulator-runner@v2
         with:
@@ -243,8 +261,8 @@ jobs:
           target: ${{ matrix.target }}
           arch: ${{ matrix.arch }}
           profile: ${{ matrix.device }}
-          cores: 3              # GitHub runners have 4; the default 2 starves Google's apps into "not responding"
-          ram-size: 4096M
+          cores: ${{ matrix.cores }}
+          ram-size: ${{ matrix.ram }}
           disable-animations: true
           emulator-boot-timeout: 300
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -wipe-data
