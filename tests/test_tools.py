@@ -145,3 +145,12 @@ def test_notify_never_fails_the_build(tmp_path):
     r = subprocess.run([sys.executable, str(ROOT / "tools/notify.py"), str(tmp_path / "msg.txt")],
                        env=env, capture_output=True, text=True)
     assert r.returncode == 0 and "Could not send to Slack" in r.stdout
+
+
+def test_summary_shows_why_flaky_tests_failed_first(tmp_path):
+    d = tmp_path / "all/report-api34-pixel_6-p0/x"
+    d.mkdir(parents=True)
+    (d / "results.json").write_text(json.dumps([{"name": "com.x.A#tap", "status": "flaky", "device": "e",
+        "details": "Failed the first time, passed on retry.\n\nandroidx.test.espresso.NoMatchingViewException: nope\n\tat x"}]))
+    out = summary.build(summary.load(str(tmp_path / "all")))
+    assert "NoMatchingViewException: nope" in out["page"]

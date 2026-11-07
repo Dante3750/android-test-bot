@@ -69,10 +69,15 @@ def build(devices, run_url="", title="Android tests"):
             problems.setdefault("(emulator did not start)", {"failed": [], "flaky": [], "first": ""})["failed"].append(f"{api} {dname}")
         for r in res:
             if r["status"] in BAD + ("flaky",):
-                p = problems.setdefault(r["name"], {"failed": [], "flaky": [], "first": ""})
+                p = problems.setdefault(r["name"], {"failed": [], "flaky": [], "first": "", "first_is_failure": False})
                 p["failed" if r["status"] in BAD else "flaky"].append(f"{api} {dname}")
-                if r["status"] in BAD and not p["first"]:
-                    p["first"] = next((l.strip() for l in r.get("details", "").splitlines() if l.strip()), "")[:160]
+                if not p["first"] or (r["status"] in BAD and not p.get("first_is_failure")):
+                    lines = [l.strip() for l in r.get("details", "").splitlines() if l.strip()]
+                    if lines and lines[0].startswith("Failed the first time"):
+                        lines = lines[1:]
+                    if lines:
+                        p["first"] = lines[0][:160]
+                        p["first_is_failure"] = r["status"] in BAD
 
     failed = totals["bad"] + totals["dead"]
     result = "failed" if failed else ("flaky" if totals["flaky"] else "passed")

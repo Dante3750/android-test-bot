@@ -60,6 +60,12 @@ def adb(serial, *args, timeout=None, check=False):
 def log(msg):
     print(f"[{datetime.now():%H:%M:%S}] {msg}", flush=True)
 
+FLAKY_PREFIX = "Failed the first time, passed on retry.\n\n"
+
+def flaky_reason(details):
+    """The first-try error of a flaky test (its details start with a fixed prefix)."""
+    return (details or "").replace(FLAKY_PREFIX, "", 1)
+
 def first_line(text):
     for line in (text or "").splitlines():
         if line.strip():
@@ -284,7 +290,7 @@ def run_shard(serial, runner, index, total, extra, results, out_dir, video=False
         for r in failed:
             if r["name"] in passed_on_retry:
                 r["status"] = "flaky"
-                r["details"] = "Failed the first time, passed on retry.\n\n" + r["details"]
+                r["details"] = FLAKY_PREFIX + r["details"]
 
     for r in shard:
         r["device"] = serial
@@ -421,13 +427,13 @@ def print_problems(results, counts, label):
     for r in bad:
         log(f"FAILED: {r['name']}  ->  {first_line(r['details'])}")
     for r in flaky:
-        log(f"FLAKY:  {r['name']}")
+        log(f"FLAKY:  {r['name']}  ->  first try: {first_line(flaky_reason(r['details']))}")
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         lines = [f"### {label}: {counts['passed']} passed, {counts['flaky']} flaky, "
                  f"{counts['quarantined']} quarantined, {counts['failed'] + counts['error']} failed"]
         lines += [f"- ❌ `{r['name']}`: {first_line(r['details'])}" for r in bad[:30]]
-        lines += [f"- ⚠️ flaky `{r['name']}`" for r in flaky[:30]]
+        lines += [f"- ⚠️ flaky `{r['name']}`: first try {first_line(flaky_reason(r['details']))}" for r in flaky[:30]]
         with open(summary, "a", encoding="utf-8") as f:
             f.write("\n".join(lines) + "\n\n")
 
