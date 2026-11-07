@@ -151,15 +151,21 @@ jobs:
           APP_APK: ${{ inputs.app-apk }}
           TEST_APK: ${{ inputs.test-apk }}
           TEST_ARGS: ${{ inputs.test-args }}
+          MODE: ${{ inputs.mode }}
         run: |
           mkdir -p apks
+          # Test APK: has "androidTest" in its name (Gradle's default) or is called test.apk
           if [ -n "$TEST_APK" ]; then t=$(find apks-in -name "$TEST_APK" | head -1);
-          else t=$(find apks-in -name '*.apk' | grep -i androidtest | head -1); fi
+          else t=$(find apks-in -name '*.apk' | grep -Ei 'androidtest|/test\.apk$' | head -1); fi
           if [ -n "$APP_APK" ]; then a=$(find apks-in -name "$APP_APK" | head -1);
-          else a=$(find apks-in -name '*.apk' | grep -vi androidtest | head -1); fi
+          else a=$(find apks-in -name '*.apk' | grep -Evi 'androidtest|/test\.apk$' | head -1); fi
           [ -z "$a" ] && { echo "::error::No app APK found in the artifact"; find apks-in; exit 1; }
           cp "$a" apks/app.apk; echo "App APK:  $a"
-          if [ -n "$t" ]; then cp "$t" apks/test.apk; echo "Test APK: $t"; else echo "No androidTest APK (fine for monkey/maestro)"; fi
+          if [ -n "$t" ]; then cp "$t" apks/test.apk; echo "Test APK: $t";
+          elif [ "$MODE" = instrument ]; then
+            echo "::error::mode 'instrument' needs the androidTest APK, but none was found in the artifact. Build it with ./gradlew assembleDebugAndroidTest and upload it too, set test-apk, or use mode monkey."
+            find apks-in -name '*.apk'; exit 1
+          else echo "No androidTest APK (fine for $MODE mode)"; fi
           ARGS=""
           for x in $TEST_ARGS; do ARGS="$ARGS --arg $x"; done
           echo "BOT_ARGS=$BASE_ARGS$ARGS" >> "$GITHUB_ENV"
