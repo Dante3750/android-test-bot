@@ -175,16 +175,16 @@ jobs:
         --quarantine ${{ inputs.quarantine-file }}
         ${{ inputs.record-video && '--video' || '' }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
       - name: Get the bot
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: ${{ inputs.bot-repo }}
           ref: ${{ inputs.bot-ref }}
           path: .android-test-bot
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: ${{ inputs.apks-artifact }}
           path: apks-in
@@ -270,7 +270,7 @@ jobs:
 
       - name: Upload report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: report-api${{ matrix.api }}-${{ matrix.device }}-p${{ matrix.part }}
           path: test-results/
@@ -291,13 +291,13 @@ jobs:
       result: ${{ steps.table.outputs.result }}
     steps:
       - name: Get the bot
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: ${{ inputs.bot-repo }}
           ref: ${{ inputs.bot-ref }}
           path: .android-test-bot
 
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           path: all
           pattern: report-api*
