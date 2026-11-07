@@ -137,7 +137,7 @@ By default you get a message only when tests fail. Set `notify-on: always` to he
 ## How it handles problems
 
 - **Failed tests are rerun once.** If a test fails and then passes, it's marked ⚠️ *flaky*. That usually means a timing problem in the test, not a bug in your app. Flaky tests don't fail the run, but fix them when you can.
-- **System popups are closed** ("System UI isn't responding", "Launcher keeps stopping") before tests start, because they steal focus and make every UI test fail.
+- **System popups are kept away.** On slow emulators, Google's own apps often stop responding, and their "isn't responding" popup covers your app so every UI test fails. The bot switches those popups off and closes any that are already open before tests start. Each emulator also gets 3 CPU cores instead of 2, so it stops responding less often. Crashes of *your* app are still reported.
 - **Broken emulators are restarted.** If the emulator doesn't boot or the app install hangs (no tests ran), the job starts a fresh emulator and tries again once.
 - **Stuck installs fail fast:** 2 minutes, then one more try.
 - **Failing test names are shown** in the job log, in each job's summary, and in the results table.
@@ -148,7 +148,7 @@ By default you get a message only when tests fail. Set `notify-on: always` to he
 | You see | It usually means |
 |---|---|
 | `NoMatchingViewException` only on Android 15+ | Android 15 draws apps edge-to-edge, under the status bar. Your top buttons are covered, so taps miss. Handle window insets (the sample app shows how) |
-| `RootViewWithoutFocusException` on every UI test | A system popup covered the app. The bot closes known popups; if it still happens, the job log says what was on screen |
+| `RootViewWithoutFocusException` on every UI test | Something covered your app. The bot switches off error popups, so look for your own dialogs or permission prompts; the job log names the window that had focus, and the failure video shows it |
 | ⚠️ flaky on slow devices | The test depends on timing. Wait for the condition with Espresso idling resources, not fixed sleeps |
 | ❌ did not start | The emulator never booted, even after a restart. Usually a GitHub problem; rerun the job |
 | No PR comment or no history | The calling job is missing the `permissions:` block from the setup above |
