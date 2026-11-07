@@ -8,6 +8,10 @@ It starts emulators, installs your app, runs your **whole** test suite (thousand
 - **Your Espresso / JUnit tests**, random-tap stress tests, or Maestro flows
 - **Big test suites split** across several emulators per device
 - **Clear results:** ✅ passed, ⚠️ flaky, ❌ failed, with the failing test names right on the run page
+- **A comment on every pull request** with the results, updated on each push
+- **A video of each real failure**, recorded while the failed test reruns
+- **Flaky-test history** across runs, and a quarantine list for tests you haven't fixed yet
+- **Telegram, Slack or Discord messages** when tests fail
 
 ## Use it in your app's repo
 
@@ -45,9 +49,14 @@ jobs:
 
   test:
     needs: build
+    permissions:
+      contents: write        # lets the bot keep the flaky-test history
+      pull-requests: write   # lets the bot comment results on pull requests
     uses: Dante3750/android-test-bot/.github/workflows/android-test.yml@v1
+    secrets: inherit         # passes your Telegram/Slack/Discord secrets, if you set any
     with:
       apks-artifact: apks
+      title: My app
       # Pull requests: one phone, tests split 4 ways (fast). Main branch and nightly: 30 devices.
       devices: ${{ github.event_name == 'pull_request' && 'single' || 'quick' }}
       shards: ${{ github.event_name == 'pull_request' && 4 || 1 }}
@@ -55,7 +64,7 @@ jobs:
 
 If your app module isn't called `app`, change the two `app/build/...` paths.
 
-That's it. Every push and pull request is tested, and every night the full quick set (30 devices) runs. GitHub emails you when a run fails.
+That's it. Every push and pull request is tested, and every night the full quick set (30 devices) runs. Pull requests get a results comment, and GitHub emails you when a run fails.
 
 ### Options
 
@@ -71,6 +80,12 @@ That's it. Every push and pull request is tested, and every night the full quick
 | `test-args` | | Extra runner options, e.g. `annotation=com.example.Smoke` or `class=com.example.LoginTest` |
 | `app-apk` / `test-apk` | auto | Exact APK file names, if auto-detection picks the wrong ones |
 | `max-parallel` | `20` | Most emulators at the same time |
+| `title` | `Android tests` | Name shown in results, PR comments and messages |
+| `quarantine-file` | `.github/flaky-tests.txt` | Known-flaky tests; they still run but can't fail the build |
+| `record-video` | `true` | Record a video while failed tests rerun |
+| `pr-comment` | `true` | Comment results on pull requests |
+| `history` | `true` | Keep the flaky-test history (main branch and nightly runs) |
+| `notify-on` | `failure` | When to send chat messages: `failure`, `always`, `never` |
 | `bot-ref` | `v1` | Bot version to use |
 
 The workflow also gives back `result` (`passed`, `flaky` or `failed`) if a later job wants to use it.
@@ -82,6 +97,43 @@ The workflow also gives back `result` (`passed`, `flaky` or `failed`) if a later
 
 A free account runs about 20 emulators at a time. Quick takes about 20–30 minutes, full about 1–2 hours.
 
+## Pull request comments
+
+On a pull request the bot posts one comment with the result, the problem tests and which devices they failed on, plus a link to the run. Later pushes update the same comment instead of adding new ones.
+
+## Videos of failures
+
+When a test fails, the bot reruns it while recording the screen. If it fails again, the video is kept in that device's report (`*-failure-*.mp4`, also playable inside `report.html`), so you can watch exactly what happened. If it passes on the rerun, it's just flaky, and the video is thrown away.
+
+## Flaky-test history and quarantine
+
+After each run on your main branch (including the nightly run), the bot updates an **`android-test-history`** branch in your repo. Open **`FLAKY.md`** on that branch to see:
+
+- which tests had problems, in how many of the last 60 runs, and what to do about each (🔴 failing every run, 🟡 often flaky)
+- the last 20 runs with their results
+
+To stop a known-flaky test from blocking you while you fix it, add it to **`.github/flaky-tests.txt`**:
+
+```
+# one per line; a reason after " #" is fine
+com.example.LoginTest#signInWithGoogle   # times out on slow emulators
+com.example.CameraTest                    # whole class
+```
+
+Quarantined tests still run and still show up (as quarantined) in the results and history, but they can't fail the build. Remove them once they're fixed.
+
+## Notifications
+
+Add any of these as repository secrets (**Settings → Secrets and variables → Actions → New repository secret**):
+
+| Chat app | Secrets | How to get them |
+|---|---|---|
+| Telegram | `TELEGRAM_TOKEN`, `TELEGRAM_CHAT_ID` | Message **@BotFather** → `/newbot` for the token. Send your new bot a message, then open `https://api.telegram.org/bot<TOKEN>/getUpdates` and copy `chat.id` |
+| Slack | `SLACK_WEBHOOK` | Slack → Apps → **Incoming Webhooks** → add to a channel |
+| Discord | `DISCORD_WEBHOOK` | Channel settings → Integrations → **Webhooks** → New webhook → Copy URL |
+
+By default you get a message only when tests fail. Set `notify-on: always` to hear about every run.
+
 ## How it handles problems
 
 - **Failed tests are rerun once.** If a test fails and then passes, it's marked ⚠️ *flaky*. That usually means a timing problem in the test, not a bug in your app. Flaky tests don't fail the run, but fix them when you can.
@@ -89,7 +141,7 @@ A free account runs about 20 emulators at a time. Quick takes about 20–30 minu
 - **Broken emulators are restarted.** If the emulator doesn't boot or the app install hangs (no tests ran), the job starts a fresh emulator and tries again once.
 - **Stuck installs fail fast:** 2 minutes, then one more try.
 - **Failing test names are shown** in the job log, in each job's summary, and in the results table.
-- **Reports for every device** can be downloaded from the run page: `report.html`, `results.json`, `junit.xml` (the standard format other tools read), logs, and a screenshot when something failed.
+- **Reports for every device** can be downloaded from the run page: `report.html`, `results.json`, `junit.xml` (the standard format other tools read), logs, failure videos, and a screenshot when something failed.
 
 ## Common failures and what they mean
 
@@ -99,6 +151,7 @@ A free account runs about 20 emulators at a time. Quick takes about 20–30 minu
 | `RootViewWithoutFocusException` on every UI test | A system popup covered the app. The bot closes known popups; if it still happens, the job log says what was on screen |
 | ⚠️ flaky on slow devices | The test depends on timing. Wait for the condition with Espresso idling resources, not fixed sleeps |
 | ❌ did not start | The emulator never booted, even after a restart. Usually a GitHub problem; rerun the job |
+| No PR comment or no history | The calling job is missing the `permissions:` block from the setup above |
 
 ## Try it in this repo
 
@@ -126,11 +179,13 @@ python test_bot.py maestro --apk app.apk --flows flows --avd Pixel_7 --emulators
 
 Leave out `--avd` to use an emulator or phone that's already running. Add `--show` to see the emulator windows. Run only some tests with `--arg class=com.example.LoginTest`.
 
+Add `--video` to record failures, and `--quarantine flaky-tests.txt` to use a quarantine list.
+
 Results go to `test-results/<date>/`. Exit code: `0` all passed (flaky allowed), `1` tests failed, `3` setup problem (device or install).
 
 ## Working on the bot
 
-`python -m pytest tests -q` runs the bot's self-tests against a fake device in a few seconds. The **Bot self-check** workflow runs them, plus a lint of every workflow, on every push.
+`python -m pytest tests -q` runs the bot's self-tests (a fake device, plus the summary, history and notification tools) in about 20 seconds. The **Bot self-check** workflow runs them, plus a lint of every workflow, on every push.
 
 ## Versions
 

@@ -138,3 +138,38 @@ def test_system_popup_is_closed_before_tests(tmp_path):
     assert "closing system popup" in out
     calls = (tmp_path / "state.calls").read_text()
     assert "keyevent 4" in calls and "CLOSE_SYSTEM_DIALOGS" in calls
+
+
+def test_video_kept_for_real_failures(tmp_path):
+    code, out, res = run_bot(tmp_path, "flaky", "instrument", "--test-apk", "test.apk", "--video")
+    assert code == 1, out
+    run_dir = [p for p in res.iterdir() if p.is_dir()][-1]
+    assert list(run_dir.glob("*failure*.mp4")), out
+    assert "<video" in (run_dir / "report.html").read_text()
+
+
+def test_no_video_when_rerun_passes(tmp_path):
+    code, out, res = run_bot(tmp_path, "only_flaky", "instrument", "--test-apk", "test.apk", "--video")
+    assert code == 0, out
+    run_dir = [p for p in res.iterdir() if p.is_dir()][-1]
+    assert not list(run_dir.glob("*.mp4"))
+    assert "rm -f /sdcard/bot-failure" in (tmp_path / "state.calls").read_text()
+
+
+def test_quarantine_stops_known_flaky_from_failing(tmp_path):
+    (tmp_path / "flaky-tests.txt").write_text("# known flaky\nLogicTest#math   # timing issue\n")
+    code, out, res = run_bot(tmp_path, "flaky", "instrument", "--test-apk", "test.apk",
+                             "--quarantine", "flaky-tests.txt")
+    assert code == 0, out
+    by = {r["name"]: r["status"] for r in results(res)}
+    assert by["com.demo.LogicTest#math"] == "quarantined"
+    assert by["com.demo.UiTest#tap"] == "flaky"
+
+
+def test_quarantine_matching():
+    e = ["com.x.LoginTest#signIn", "SettingsTest", "P#add"]
+    assert test_bot.is_quarantined("com.x.LoginTest#signIn", e)
+    assert not test_bot.is_quarantined("com.x.LoginTest#signOut", e)
+    assert test_bot.is_quarantined("com.y.SettingsTest#anything", e)
+    assert test_bot.is_quarantined("com.z.P#add[a_1_2]", e)
+    assert not test_bot.is_quarantined("com.z.MyP#add", e)

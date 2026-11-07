@@ -54,11 +54,16 @@ jobs:
 
   test:
     needs: build
+    permissions:
+      contents: write        # flaky-test history branch
+      pull-requests: write   # results comment on pull requests
     uses: ./.github/workflows/android-test.yml
     with:
       apks-artifact: apks
       devices: ${{ github.event.inputs.devices || 'quick' }}
+      title: Sample app on ${{ github.event.inputs.devices || 'quick' }} device list
       mode: ${{ github.event.inputs.mode || 'instrument' }}
       events: ${{ fromJSON(github.event.inputs.events || '4000') }}
       bot-repo: ${{ github.repository }}
       bot-ref: ${{ github.sha }}
+    secrets: inherit

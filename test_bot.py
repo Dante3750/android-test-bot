@@ -148,6 +148,74 @@ def install(serial, apk):
             wait_for_boot(serial, timeout=180)
     raise SetupError(f"Could not install {apk} on {serial}")
 
+# ---------- failure videos ----------
+class Recorder:
+    """Records the screen (in 3-minute pieces, Android's limit) while failed tests rerun.
+    The video is kept only if a test fails again, so it shows the real failure."""
+    def __init__(self, serial, out_dir, name):
+        self.serial, self.out_dir, self.name = serial, out_dir, name
+        self.stopped, self.parts = threading.Event(), []
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+        self.thread.start()
+
+    def _loop(self):
+        for i in range(6):   # up to 18 minutes
+            if self.stopped.is_set():
+                return
+            remote = f"/sdcard/bot-{self.name}-{i}.mp4"
+            self.parts.append(remote)
+            adb(self.serial, "shell", "screenrecord", "--time-limit", "180", "--bit-rate", "2000000",
+                remote, timeout=200)
+
+    def stop(self, keep):
+        time.sleep(1)  # let the last frames land
+        self.stopped.set()
+        adb(self.serial, "shell", "pkill -2 screenrecord || kill -2 $(pidof screenrecord)", timeout=30)
+        self.thread.join(timeout=20)
+        time.sleep(1)
+        saved = []
+        for i, remote in enumerate(self.parts):
+            if keep:
+                local = self.out_dir / f"{self.serial}-{self.name}-{i}.mp4"
+                adb(self.serial, "pull", remote, str(local), timeout=120)
+                if local.exists() and local.stat().st_size > 0:
+                    saved.append(local)
+            adb(self.serial, "shell", "rm", "-f", remote, timeout=30)
+        if keep and saved:
+            log(f"{self.serial}: saved video of the failing tests: {', '.join(p.name for p in saved)}")
+        return saved
+
+# ---------- quarantine ----------
+def load_quarantine(path):
+    """Known-flaky tests, one per line: com.x.LoginTest#signIn, com.x.LoginTest (whole class),
+    or LoginTest#signIn. Lines starting with # are comments."""
+    if not path or not Path(path).exists():
+        return []
+    entries = []
+    for line in Path(path).read_text(encoding="utf-8").splitlines():
+        line = line.split(" #")[0].strip()
+        if line and not line.startswith("#"):
+            entries.append(line)
+    return entries
+
+def is_quarantined(name, entries):
+    full = name.split("[")[0]
+    cls = full.split("#")[0]
+    for e in entries:
+        if e in (full, cls) or full.endswith("." + e) or cls.endswith("." + e):
+            return True
+    return False
+
+def apply_quarantine(results, entries):
+    hits = 0
+    for r in results:
+        if r["status"] in ("failed", "error", "flaky") and is_quarantined(r["name"], entries):
+            r["details"] = f"Quarantined (was {r['status']}): listed in the flaky-tests file, so it doesn't fail the run.\n\n" + r["details"]
+            r["status"] = "quarantined"
+            hits += 1
+    if hits:
+        log(f"{hits} quarantined test result(s) won't fail the run")
+
 # ---------- instrumentation tests ----------
 STATUS = {"0": "passed", "-1": "error", "-2": "failed", "-3": "skipped", "-4": "skipped"}
 
@@ -186,7 +254,7 @@ def instrument(serial, runner, args, out_file):
     crashed = "INSTRUMENTATION_FAILED" in out or "Process crashed" in out
     return parse_instrument(out), crashed, out
 
-def run_shard(serial, runner, index, total, extra, results, out_dir):
+def run_shard(serial, runner, index, total, extra, results, out_dir, video=False):
     log(f"{serial}: running shard {index + 1}/{total}")
     args = ["-e", "numShards", str(total), "-e", "shardIndex", str(index)]
     for e in extra:
@@ -207,9 +275,12 @@ def run_shard(serial, runner, index, total, extra, results, out_dir):
         settle(serial, timeout=30)
         targets = sorted({r["name"].split("[")[0] for r in failed})
         log(f"{serial}: {len(failed)} failed, rerunning {len(targets)} test(s) once")
+        rec = Recorder(serial, out_dir, "failure") if video else None
         rerun, _, _ = instrument(serial, runner, ["-e", "class", ",".join(targets)],
                                  out_dir / f"{serial}-instrument-rerun.txt")
         passed_on_retry = {r["name"] for r in rerun if r["status"] == "passed"}
+        if rec:
+            rec.stop(keep=any(r["name"] not in passed_on_retry for r in failed))
         for r in failed:
             if r["name"] in passed_on_retry:
                 r["status"] = "flaky"
@@ -282,14 +353,17 @@ def screenshot(serial, out_dir):
         pass
 
 # ---------- report ----------
-ORDER = {"failed": 0, "error": 0, "flaky": 1, "skipped": 2, "passed": 3}
+ORDER = {"failed": 0, "error": 0, "flaky": 1, "quarantined": 2, "skipped": 3, "passed": 4}
+STATUSES = ("passed", "flaky", "quarantined", "failed", "error", "skipped")
 
 def write_report(results, out_dir, started, mode):
-    counts = {s: sum(r["status"] == s for r in results) for s in ("passed", "flaky", "failed", "error", "skipped")}
+    counts = {s: sum(r["status"] == s for r in results) for s in STATUSES}
     (out_dir / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
     took = int(time.time() - started)
     shots = "".join(f"<figure><img src='{p.name}' width=240><figcaption>{p.stem}</figcaption></figure>"
                     for p in sorted(out_dir.glob("*-screen.png")))
+    videos = "".join(f"<figure><video src='{p.name}' width=320 controls></video><figcaption>{p.stem}</figcaption></figure>"
+                     for p in sorted(out_dir.glob("*.mp4")))
     rows = "".join(
         f"<tr class='{r['status']}'><td>{html.escape(r['name'])}</td><td>{r['status']}</td>"
         f"<td>{r['device']}</td><td><pre>{html.escape(r['details'][:3000])}</pre></td></tr>"
@@ -297,11 +371,12 @@ def write_report(results, out_dir, started, mode):
     page = f"""<!doctype html><meta charset=utf-8><title>Test Report</title>
 <style>body{{font-family:system-ui;margin:24px}}table{{border-collapse:collapse;width:100%}}
 td,th{{border:1px solid #ccc;padding:6px;text-align:left;vertical-align:top}}
-.failed,.error{{background:#fde2e2}}.flaky{{background:#fff4d6}}.passed{{background:#e4f7e4}}.skipped{{background:#f2f2f2}}
+.failed,.error{{background:#fde2e2}}.flaky{{background:#fff4d6}}.quarantined{{background:#ede7f6}}.passed{{background:#e4f7e4}}.skipped{{background:#f2f2f2}}
 pre{{white-space:pre-wrap;margin:0;font-size:12px;max-height:200px;overflow:auto}}figure{{display:inline-block;margin:8px}}</style>
 <h1>Test Report ({mode})</h1>
-<p><b>{counts['passed']}</b> passed, <b>{counts['flaky']}</b> flaky (passed on retry), <b>{counts['failed']}</b> failed,
+<p><b>{counts['passed']}</b> passed, <b>{counts['flaky']}</b> flaky (passed on retry), <b>{counts['quarantined']}</b> quarantined, <b>{counts['failed']}</b> failed,
 <b>{counts['error']}</b> errors, <b>{counts['skipped']}</b> skipped, {len(results)} total, took {took // 60}m {took % 60}s</p>
+{('<h2>Video of the failing tests (rerun)</h2>' + videos) if videos else ''}
 {('<h2>Screen at the end</h2>' + shots) if shots else ''}
 <table><tr><th>Test</th><th>Status</th><th>Device</th><th>Details</th></tr>{rows}</table>"""
     (out_dir / "report.html").write_text(page, encoding="utf-8")
@@ -318,7 +393,7 @@ def write_junit(results, path, took):
     for device, rs in by_device.items():
         fails = sum(r["status"] == "failed" for r in rs)
         errs = sum(r["status"] == "error" for r in rs)
-        skips = sum(r["status"] == "skipped" for r in rs)
+        skips = sum(r["status"] in ("skipped", "quarantined") for r in rs)
         cases = []
         for r in rs:
             cls, _, name = r["name"].rpartition("#")
@@ -330,6 +405,8 @@ def write_junit(results, path, took):
                 body = f"<error message={quoteattr(first_line(r['details']))}>{escape(r['details'])}</error>"
             elif r["status"] == "skipped":
                 body = "<skipped/>"
+            elif r["status"] == "quarantined":
+                body = f"<skipped message={quoteattr('quarantined: ' + first_line(r['details']))}/>"
             elif r["status"] == "flaky":
                 body = f"<system-out>{escape('FLAKY: failed once, passed on retry.')}</system-out>"
             cases.append(f"    <testcase {attrs}>{body}</testcase>")
@@ -348,7 +425,7 @@ def print_problems(results, counts, label):
     summary = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary:
         lines = [f"### {label}: {counts['passed']} passed, {counts['flaky']} flaky, "
-                 f"{counts['failed'] + counts['error']} failed"]
+                 f"{counts['quarantined']} quarantined, {counts['failed'] + counts['error']} failed"]
         lines += [f"- ❌ `{r['name']}`: {first_line(r['details'])}" for r in bad[:30]]
         lines += [f"- ⚠️ flaky `{r['name']}`" for r in flaky[:30]]
         with open(summary, "a", encoding="utf-8") as f:
@@ -369,6 +446,8 @@ def main():
     ap.add_argument("--show", action="store_true", help="show emulator windows")
     ap.add_argument("--shard", default="0/1", help="run only part i of n (0-based), e.g. 2/4; used by GitHub Actions")
     ap.add_argument("--label", default=os.environ.get("DEVICE_LABEL", "Results"), help="name shown in the summary")
+    ap.add_argument("--quarantine", help="file listing known-flaky tests; their failures don't fail the run")
+    ap.add_argument("--video", action="store_true", help="record the screen while failed tests rerun")
     ap.add_argument("--out", default="test-results")
     a = ap.parse_args()
     if a.test_apk and not Path(a.test_apk).exists():
@@ -411,7 +490,7 @@ def main():
             total = parts * len(serials)
             log(f"Test runner: {runner}; part {part + 1}/{parts}, split across {len(serials)} device(s)")
             threads = [threading.Thread(target=run_shard,
-                       args=(s, runner, part * len(serials) + i, total, a.arg, results, out_dir))
+                       args=(s, runner, part * len(serials) + i, total, a.arg, results, out_dir, a.video))
                        for i, s in enumerate(serials)]
             [t.start() for t in threads]
             [t.join() for t in threads]
@@ -431,6 +510,7 @@ def main():
 
         if not results:
             raise SetupError("The bot finished without running a single test.")
+        apply_quarantine(results, load_quarantine(a.quarantine))
         if any(r["status"] in ("failed", "error") for r in results):
             for s in serials:
                 screenshot(s, out_dir)
@@ -438,7 +518,8 @@ def main():
         counts = write_report(results, out_dir, started, a.mode)
         (root / "TESTS_RAN").write_text("yes")  # tells the workflow not to restart the emulator
         print_problems(results, counts, a.label)
-        log(f"DONE: {counts['passed']} passed, {counts['flaky']} flaky, {counts['failed']} failed, {counts['error']} errors")
+        log(f"DONE: {counts['passed']} passed, {counts['flaky']} flaky, {counts['quarantined']} quarantined, "
+            f"{counts['failed']} failed, {counts['error']} errors")
         log(f"Report: {out_dir / 'report.html'}")
         sys.exit(1 if counts["failed"] or counts["error"] else 0)
     except SetupError as e:

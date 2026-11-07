@@ -77,6 +77,10 @@ elif "monkey" in line:
         print("** Monkey aborted due to error.")
     else:
         print("Events injected: 50\n// Monkey finished")
+elif args[:2] == ["shell", "screenrecord"]:
+    import time; time.sleep(0.2)
+elif args[:1] == ["pull"]:
+    Path(args[2]).write_bytes(b"fake mp4")
 elif "screencap" in line:
     sys.stdout.buffer.write(b"\x89PNG fake")
 # everything else (settings, logcat, input, emu kill, wait-for-device): succeed quietly

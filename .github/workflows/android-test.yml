@@ -68,6 +68,39 @@ on:
         description: "Where the bot lives"
         type: string
         default: Dante3750/android-test-bot
+      title:
+        description: "Name shown in the results, PR comment and notifications"
+        type: string
+        default: Android tests
+      quarantine-file:
+        description: "File in your repo listing known-flaky tests (one per line). They still run, but can't fail the build"
+        type: string
+        default: .github/flaky-tests.txt
+      record-video:
+        description: "Record the screen while failed tests rerun, so you can watch the failure"
+        type: boolean
+        default: true
+      pr-comment:
+        description: "Post the results as a comment on pull requests (needs pull-requests: write)"
+        type: boolean
+        default: true
+      history:
+        description: "Keep a flaky-test history on the android-test-history branch (needs contents: write)"
+        type: boolean
+        default: true
+      notify-on:
+        description: "When to send Telegram/Slack/Discord messages: failure, always or never"
+        type: string
+        default: failure
+    secrets:
+      TELEGRAM_TOKEN:
+        required: false
+      TELEGRAM_CHAT_ID:
+        required: false
+      SLACK_WEBHOOK:
+        required: false
+      DISCORD_WEBHOOK:
+        required: false
     outputs:
       result:
         description: "passed, flaky or failed"
@@ -131,6 +164,8 @@ jobs:
         ${{ inputs.mode }} --apk apks/app.apk --test-apk apks/test.apk
         --flows ${{ inputs.flows }} --events ${{ inputs.events }}
         --shard ${{ matrix.part }}/${{ matrix.parts }} --out test-results
+        --quarantine ${{ inputs.quarantine-file }}
+        ${{ inputs.record-video && '--video' || '' }}
     steps:
       - uses: actions/checkout@v6
 
@@ -233,50 +268,80 @@ jobs:
     outputs:
       result: ${{ steps.table.outputs.result }}
     steps:
+      - name: Get the bot
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.bot-repo }}
+          ref: ${{ inputs.bot-ref }}
+          path: .android-test-bot
+
       - uses: actions/download-artifact@v4
         with:
           path: all
           pattern: report-api*
-      - name: Build one table of all results
+
+      - name: Results table
         id: table
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          TITLE: ${{ inputs.title }}
+        run: python3 .android-test-bot/tools/summary.py --reports all --out out --run-url "$RUN_URL" --title "$TITLE"
+
+      - name: Comment on the pull request
+        if: inputs.pr-comment && github.event_name == 'pull_request'
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          PR: ${{ github.event.pull_request.number }}
         run: |
-          python3 - <<'EOF'
-          import json, glob, os, re
-          devices = {}
-          for d in glob.glob("all/report-api*"):
-              m = re.match(r"report-api(\d+)-(.+)-p(\d+)$", os.path.basename(d))
-              if not m:
-                  continue
-              files = sorted(glob.glob(f"{d}/**/results.json", recursive=True))
-              res = json.load(open(files[-1])) if files else None
-              dev = devices.setdefault((int(m.group(1)), m.group(2)), {"res": [], "missing": 0})
-              if res is None:
-                  dev["missing"] += 1
-              else:
-                  dev["res"] += res
-          rows, totals = [], {"ok": 0, "flaky": 0, "bad": 0}
-          for (api, name), dev in sorted(devices.items()):
-              res = dev["res"]
-              p = sum(r["status"] == "passed" for r in res)
-              fl = [r for r in res if r["status"] == "flaky"]
-              bad = [r for r in res if r["status"] in ("failed", "error")]
-              if dev["missing"] or not res:
-                  status = "❌ did not start"; totals["bad"] += 1
-              elif bad:
-                  status = "❌"; totals["bad"] += 1
-              elif fl:
-                  status = "⚠️ flaky"; totals["flaky"] += 1
-              else:
-                  status = "✅"; totals["ok"] += 1
-              shown = bad or fl
-              names = ", ".join(f"`{r['name'].split('.')[-1]}`" for r in shown[:3])
-              if len(shown) > 3:
-                  names += f" +{len(shown) - 3} more"
-              rows.append(f"| {api} | {name} | {status} | {p} | {len(fl)} | {len(bad)} | {names} |")
-          result = "failed" if totals["bad"] else ("flaky" if totals["flaky"] else "passed")
-          out = (f"## Results on every device\n\n**{totals['ok']} ✅ passed, {totals['flaky']} ⚠️ flaky, {totals['bad']} ❌ failed**\n\n"
-                 "| API | Device | Result | Passed | Flaky | Failed | Problem tests |\n|---|---|---|---|---|---|---|\n" + "\n".join(rows))
-          open(os.environ["GITHUB_STEP_SUMMARY"], "a").write(out + "\n")
-          open(os.environ["GITHUB_OUTPUT"], "a").write(f"result={result}\n")
-          print(out)
-          EOF
+          # Update the bot's earlier comment instead of adding a new one on every push
+          id=$(gh api "repos/$REPO/issues/$PR/comments" --paginate --jq '.[] | select(.body | contains("<!-- android-test-bot -->")) | .id' | tail -1)
+          if [ -n "$id" ]; then
+            gh api -X PATCH "repos/$REPO/issues/comments/$id" -F body=@out/comment.md > /dev/null && echo "Updated comment $id"
+          else
+            gh api -X POST "repos/$REPO/issues/$PR/comments" -F body=@out/comment.md > /dev/null && echo "Added a comment"
+          fi
+
+      - name: Update flaky-test history
+        if: inputs.history && github.event_name != 'pull_request' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+        continue-on-error: true
+        env:
+          TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          url="https://x-access-token:${TOKEN}@github.com/${REPO}.git"
+          for attempt in 1 2 3; do
+            rm -rf hist
+            if ! git clone -q --depth 1 --branch android-test-history "$url" hist 2>/dev/null; then
+              git init -q -b android-test-history hist && git -C hist remote add origin "$url"
+            fi
+            python3 .android-test-bot/tools/history.py --history hist --reports all --sha "$GITHUB_SHA" \
+              --ref "$GITHUB_REF_NAME" --event "$GITHUB_EVENT_NAME" --run-url "$RUN_URL" --repo "$REPO" > /dev/null
+            git -C hist add -A
+            git -C hist -c user.name="android-test-bot" -c user.email="android-test-bot@users.noreply.github.com" \
+              commit -q -m "Test history: run $GITHUB_RUN_ID"
+            if git -C hist push -q origin android-test-history; then
+              echo "History updated: ${{ github.server_url }}/$REPO/blob/android-test-history/FLAKY.md"; exit 0
+            fi
+            echo "Someone else updated the history at the same time, trying again"; sleep $((attempt * 5))
+          done
+          echo "::warning::Could not update the test history"
+
+      - name: Send notification
+        if: inputs.notify-on != 'never'
+        env:
+          RESULT: ${{ steps.table.outputs.result }}
+          NOTIFY_ON: ${{ inputs.notify-on }}
+          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+          DISCORD_WEBHOOK: ${{ secrets.DISCORD_WEBHOOK }}
+        run: python3 .android-test-bot/tools/notify.py out/notify.txt
+
+      - name: Fail if tests failed
+        if: steps.table.outputs.result == 'failed'
+        run: |
+          echo "::error::Some tests failed. See the table above."
+          exit 1

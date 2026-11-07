@@ -1,0 +1,4 @@
+# Known-flaky tests: they still run, but their failures don't fail the build.
+# One per line: a full name (com.example.LoginTest#signIn), a class (com.example.LoginTest),
+# or a short name (LoginTest#signIn). Add a reason after " #" if you like.
+# Fix them and remove them from this list; the history page (FLAKY.md) shows which are still bad.

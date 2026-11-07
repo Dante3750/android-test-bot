@@ -22,6 +22,13 @@ on:
     paths:
       - "apks/**"
       - "sample-app/**"
+  pull_request:
+    paths:
+      - "apks/**"
+      - "sample-app/**"
+      - "test_bot.py"
+      - "tools/**"
+      - ".github/workflows/android-test.yml"
 
 jobs:
   build:
@@ -56,13 +63,18 @@ jobs:
 
   test:
     needs: build
+    permissions:
+      contents: write        # flaky-test history branch
+      pull-requests: write   # results comment on pull requests
     uses: ./.github/workflows/android-test.yml
     with:
       apks-artifact: apks
       devices: single
       api-level: ${{ fromJSON(github.event.inputs.api_level || '34') }}
       shards: 4
+      title: Sample app (Android ${{ github.event.inputs.api_level || '34' }}, 4 emulators)
       mode: ${{ github.event.inputs.mode || 'instrument' }}
       events: ${{ fromJSON(github.event.inputs.events || '4000') }}
       bot-repo: ${{ github.repository }}
       bot-ref: ${{ github.sha }}
+    secrets: inherit
