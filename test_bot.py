@@ -281,6 +281,9 @@ def main():
             [t.start() for t in threads]
             [t.join() for t in threads]
 
+        if not results:
+            results.append({"name": "No tests ran", "status": "error", "device": ", ".join(serials),
+                            "details": "The bot finished without running a single test. Check the logs in this folder."})
         counts = write_report(results, out_dir, started, a.mode)
         log(f"DONE: {counts['passed']} passed, {counts['failed']} failed, {counts['error']} errors")
         log(f"Report: {out_dir / 'report.html'}")
