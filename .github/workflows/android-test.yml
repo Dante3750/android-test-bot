@@ -1,0 +1,276 @@
+name: Android Test Bot (reusable)
+
+# Call this from any repo to test an app on Android emulators:
+#
+#   jobs:
+#     build:  ... build your APKs, then upload them with actions/upload-artifact (name: apks)
+#     test:
+#       needs: build
+#       uses: Dante3750/android-test-bot/.github/workflows/android-test.yml@v1
+#       with:
+#         apks-artifact: apks
+#         devices: quick
+#
+# See README.md for every option.
+
+on:
+  workflow_call:
+    inputs:
+      apks-artifact:
+        description: "Name of the artifact (uploaded earlier in the same run) holding your app APK and, optionally, the androidTest APK"
+        type: string
+        required: true
+      app-apk:
+        description: "File name of the app APK inside the artifact. Empty = find it automatically"
+        type: string
+        default: ""
+      test-apk:
+        description: "File name of the androidTest APK inside the artifact. Empty = any APK with 'androidTest' in its name"
+        type: string
+        default: ""
+      devices:
+        description: "quick (30 devices), full (104), single (one phone at api-level), or a JSON list like [{\"api\":34,\"device\":\"pixel_6\"}] (optional per device: target, arch)"
+        type: string
+        default: quick
+      api-level:
+        description: "Android API level used when devices is 'single'"
+        type: number
+        default: 34
+      shards:
+        description: "Split the tests on each device into this many parallel parts (use 2-8 for very big test suites)"
+        type: number
+        default: 1
+      mode:
+        description: "instrument (your androidTest tests), monkey (random taps), or maestro (YAML flows)"
+        type: string
+        default: instrument
+      events:
+        description: "Random events per device in monkey mode"
+        type: number
+        default: 4000
+      flows:
+        description: "Folder of Maestro flows in your repo (maestro mode)"
+        type: string
+        default: flows
+      test-args:
+        description: "Extra runner arguments, space separated, e.g. 'annotation=com.x.Smoke' or 'class=com.x.LoginTest'"
+        type: string
+        default: ""
+      max-parallel:
+        description: "Most emulators running at the same time"
+        type: number
+        default: 20
+      bot-ref:
+        description: "Which version of the bot to use (tag, branch or commit)"
+        type: string
+        default: v1
+      bot-repo:
+        description: "Where the bot lives"
+        type: string
+        default: Dante3750/android-test-bot
+    outputs:
+      result:
+        description: "passed, flaky or failed"
+        value: ${{ jobs.summary.outputs.result }}
+
+jobs:
+  plan:
+    name: Pick devices
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+    steps:
+      - name: Pick devices
+        id: plan
+        env:
+          DEVICES: ${{ inputs.devices }}
+          API: ${{ inputs.api-level }}
+          SHARDS: ${{ inputs.shards }}
+        run: |
+          python3 - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json, os, sys
+          spec, shards = os.environ["DEVICES"].strip(), max(1, int(os.environ["SHARDS"]))
+          apis = list(range(24, 37))   # 24 = Android 7.0 ... 36 = Android 16
+          if spec == "full":
+              kinds = ["pixel", "pixel_xl", "pixel_3a", "pixel_4", "pixel_6", "pixel_7", "pixel_c", "pixel_tablet"]
+              devs = [{"api": a, "device": d} for a in apis for d in kinds]
+          elif spec == "quick":
+              devs  = [{"api": a, "device": "pixel_6"} for a in apis]                    # every version, normal phone
+              devs += [{"api": a, "device": "pixel"} for a in (24, 28, 31, 34, 36)]      # small phone
+              devs += [{"api": a, "device": "pixel_7"} for a in (33, 34, 35, 36)]        # big phone
+              devs += [{"api": a, "device": "pixel_3a"} for a in (26, 29)]               # budget phone
+              devs += [{"api": a, "device": "pixel_c"} for a in (24, 28)]                # old tablet
+              devs += [{"api": a, "device": "pixel_tablet"} for a in (30, 33, 35, 36)]   # new tablet
+          elif spec == "single":
+              devs = [{"api": int(os.environ["API"]), "device": "pixel_6"}]
+          else:
+              devs = json.loads(spec)
+          for d in devs:
+              # Google publishes no x86_64 "Google APIs" image for API 27, so use the plain Android one.
+              d.setdefault("target", "default" if d["api"] == 27 else "google_apis")
+              d.setdefault("arch", "x86_64")
+          jobs = [dict(d, part=p, parts=shards) for d in devs for p in range(shards)]
+          if len(jobs) > 256:
+              sys.exit(f"{len(jobs)} jobs is more than GitHub's limit of 256. Use fewer devices or shards.")
+          print("matrix=" + json.dumps({"include": jobs}))
+          print(f"{len(devs)} device(s) x {shards} part(s) = {len(jobs)} job(s)", file=sys.stderr)
+          EOF
+
+  test:
+    needs: plan
+    name: API ${{ matrix.api }} ${{ matrix.device }}${{ matrix.parts > 1 && format(' part {0}', matrix.part) || '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      max-parallel: ${{ inputs.max-parallel }}
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      DEVICE_LABEL: API ${{ matrix.api }} - ${{ matrix.device }}
+      BASE_ARGS: >-
+        ${{ inputs.mode }} --apk apks/app.apk --test-apk apks/test.apk
+        --flows ${{ inputs.flows }} --events ${{ inputs.events }}
+        --shard ${{ matrix.part }}/${{ matrix.parts }} --out test-results
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Get the bot
+        uses: actions/checkout@v6
+        with:
+          repository: ${{ inputs.bot-repo }}
+          ref: ${{ inputs.bot-ref }}
+          path: .android-test-bot
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ inputs.apks-artifact }}
+          path: apks-in
+
+      - name: Find the APKs
+        env:
+          APP_APK: ${{ inputs.app-apk }}
+          TEST_APK: ${{ inputs.test-apk }}
+          TEST_ARGS: ${{ inputs.test-args }}
+        run: |
+          mkdir -p apks
+          if [ -n "$TEST_APK" ]; then t=$(find apks-in -name "$TEST_APK" | head -1);
+          else t=$(find apks-in -name '*.apk' | grep -i androidtest | head -1); fi
+          if [ -n "$APP_APK" ]; then a=$(find apks-in -name "$APP_APK" | head -1);
+          else a=$(find apks-in -name '*.apk' | grep -vi androidtest | head -1); fi
+          [ -z "$a" ] && { echo "::error::No app APK found in the artifact"; find apks-in; exit 1; }
+          cp "$a" apks/app.apk; echo "App APK:  $a"
+          if [ -n "$t" ]; then cp "$t" apks/test.apk; echo "Test APK: $t"; else echo "No androidTest APK (fine for monkey/maestro)"; fi
+          ARGS=""
+          for x in $TEST_ARGS; do ARGS="$ARGS --arg $x"; done
+          echo "BOT_ARGS=$BASE_ARGS$ARGS" >> "$GITHUB_ENV"
+
+      - name: Enable KVM (fast emulator)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install Maestro
+        if: inputs.mode == 'maestro'
+        run: |
+          curl -Ls "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      - name: Run test bot
+        id: run1
+        continue-on-error: true
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api }}
+          target: ${{ matrix.target }}
+          arch: ${{ matrix.arch }}
+          profile: ${{ matrix.device }}
+          disable-animations: true
+          emulator-boot-timeout: 300
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: python3 .android-test-bot/test_bot.py $BOT_ARGS
+
+      # The emulator never started or the install broke (no tests ran): start a fresh emulator once.
+      - name: Retry with a fresh emulator
+        id: run2
+        if: steps.run1.outcome == 'failure' && hashFiles('test-results/TESTS_RAN') == ''
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ matrix.api }}
+          target: ${{ matrix.target }}
+          arch: ${{ matrix.arch }}
+          profile: ${{ matrix.device }}
+          disable-animations: true
+          emulator-boot-timeout: 300
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -wipe-data
+          script: rm -rf test-results && python3 .android-test-bot/test_bot.py $BOT_ARGS
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: report-api${{ matrix.api }}-${{ matrix.device }}-p${{ matrix.part }}
+          path: test-results/
+
+      - name: Final result
+        if: always()
+        run: |
+          if [ "${{ steps.run2.outcome }}" = "failure" ]; then exit 1; fi
+          if [ "${{ steps.run1.outcome }}" = "failure" ] && [ "${{ steps.run2.outcome }}" != "success" ]; then exit 1; fi
+          echo "OK"
+
+  summary:
+    name: Summary
+    needs: test
+    if: always()
+    runs-on: ubuntu-latest
+    outputs:
+      result: ${{ steps.table.outputs.result }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: all
+          pattern: report-api*
+      - name: Build one table of all results
+        id: table
+        run: |
+          python3 - <<'EOF'
+          import json, glob, os, re
+          devices = {}
+          for d in glob.glob("all/report-api*"):
+              m = re.match(r"report-api(\d+)-(.+)-p(\d+)$", os.path.basename(d))
+              if not m:
+                  continue
+              files = sorted(glob.glob(f"{d}/**/results.json", recursive=True))
+              res = json.load(open(files[-1])) if files else None
+              dev = devices.setdefault((int(m.group(1)), m.group(2)), {"res": [], "missing": 0})
+              if res is None:
+                  dev["missing"] += 1
+              else:
+                  dev["res"] += res
+          rows, totals = [], {"ok": 0, "flaky": 0, "bad": 0}
+          for (api, name), dev in sorted(devices.items()):
+              res = dev["res"]
+              p = sum(r["status"] == "passed" for r in res)
+              fl = [r for r in res if r["status"] == "flaky"]
+              bad = [r for r in res if r["status"] in ("failed", "error")]
+              if dev["missing"] or not res:
+                  status = "❌ did not start"; totals["bad"] += 1
+              elif bad:
+                  status = "❌"; totals["bad"] += 1
+              elif fl:
+                  status = "⚠️ flaky"; totals["flaky"] += 1
+              else:
+                  status = "✅"; totals["ok"] += 1
+              shown = bad or fl
+              names = ", ".join(f"`{r['name'].split('.')[-1]}`" for r in shown[:3])
+              if len(shown) > 3:
+                  names += f" +{len(shown) - 3} more"
+              rows.append(f"| {api} | {name} | {status} | {p} | {len(fl)} | {len(bad)} | {names} |")
+          result = "failed" if totals["bad"] else ("flaky" if totals["flaky"] else "passed")
+          out = (f"## Results on every device\n\n**{totals['ok']} ✅ passed, {totals['flaky']} ⚠️ flaky, {totals['bad']} ❌ failed**\n\n"
+                 "| API | Device | Result | Passed | Flaky | Failed | Problem tests |\n|---|---|---|---|---|---|---|\n" + "\n".join(rows))
+          open(os.environ["GITHUB_STEP_SUMMARY"], "a").write(out + "\n")
+          open(os.environ["GITHUB_OUTPUT"], "a").write(f"result={result}\n")
+          print(out)
+          EOF

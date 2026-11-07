@@ -1,0 +1,25 @@
+name: Bot self-check
+
+# Fast checks on every change to the bot (no emulator, ~1 minute):
+# the bot's self-tests with a fake device, and a lint of every workflow file.
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Self-tests
+        run: |
+          pip install pytest
+          python -m pytest tests -q
+      - name: Lint workflows
+        run: |
+          bash <(curl -sSfL https://raw.githubusercontent.com/rhysd/actionlint/main/scripts/download-actionlint.bash)
+          ./actionlint -color

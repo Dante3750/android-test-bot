@@ -1,8 +1,10 @@
 package com.example.samplebot;
 
 import android.app.Activity;
+import android.os.Build;
 import android.os.Bundle;
 import android.view.Gravity;
+import android.view.WindowInsets;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.LinearLayout;
@@ -53,6 +55,17 @@ public class MainActivity extends Activity {
         helloText = new TextView(this);
         helloText.setTextSize(20);
         root.addView(helloText);
+
+        // Android 15+ draws apps edge-to-edge, under the status bar. Without this, the top of
+        // the screen (the "Add one" button) sits under the status bar and taps land there instead.
+        if (Build.VERSION.SDK_INT >= 35) {
+            root.setOnApplyWindowInsetsListener((v, insets) -> {
+                android.graphics.Insets bars = insets.getInsets(
+                        WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                v.setPadding(48 + bars.left, 96 + bars.top, 48 + bars.right, 48 + bars.bottom);
+                return insets;
+            });
+        }
 
         setContentView(root);
         show();

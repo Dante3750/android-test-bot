@@ -1,7 +1,7 @@
 name: Android Tests
 
-# Runs your whole test suite split across 4 emulators at the same time.
-# Put your APKs in the apks/ folder (see apks/README.md), or leave it empty to test the sample app.
+# Runs the whole test suite of the app in apks/ (or the sample app) on one Android version,
+# split across 4 emulators at the same time.
 # Runs on every push to apks/ or sample-app/, or: Actions tab -> "Android Tests" -> "Run workflow".
 
 on:
@@ -56,76 +56,13 @@ jobs:
 
   test:
     needs: build
-    name: Part ${{ matrix.part }} of 4
-    runs-on: ubuntu-latest
-    timeout-minutes: 180
-    strategy:
-      fail-fast: false
-      matrix:
-        part: [0, 1, 2, 3]   # 4 emulators in parallel; add numbers for more
-    env:
-      MODE: ${{ github.event.inputs.mode || 'instrument' }}
-      EVENTS: ${{ github.event.inputs.events || '4000' }}
-      PART: ${{ matrix.part }}
-      PARTS: 4             # keep equal to how many numbers are in "part" above
-      DEVICE_LABEL: Part ${{ matrix.part }} (API ${{ github.event.inputs.api_level || '34' }})
-    steps:
-      - uses: actions/checkout@v6
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: apks
-          path: apks
-
-      - name: Enable KVM (fast emulator)
-        run: |
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-
-      - name: Install Maestro
-        if: env.MODE == 'maestro'
-        run: |
-          curl -Ls "https://get.maestro.mobile.dev" | bash
-          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
-
-      - name: Run test bot
-        id: run1
-        continue-on-error: true
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: ${{ github.event.inputs.api_level || '34' }}
-          target: google_apis
-          arch: x86_64
-          disable-animations: true
-          emulator-boot-timeout: 300
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
-          script: python3 test_bot.py $MODE --apk apks/app.apk --test-apk apks/test.apk --flows flows --events $EVENTS --shard $PART/$PARTS --out test-results
-
-      # If the emulator never started or the install broke (no tests ran), start a fresh emulator once.
-      - name: Retry with a fresh emulator
-        id: run2
-        if: steps.run1.outcome == 'failure' && hashFiles('test-results/TESTS_RAN') == ''
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: ${{ github.event.inputs.api_level || '34' }}
-          target: google_apis
-          arch: x86_64
-          disable-animations: true
-          emulator-boot-timeout: 300
-          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -wipe-data
-          script: rm -rf test-results && python3 test_bot.py $MODE --apk apks/app.apk --test-apk apks/test.apk --flows flows --events $EVENTS --shard $PART/$PARTS --out test-results
-
-      - name: Upload report
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: test-report-part-${{ matrix.part }}
-          path: test-results/
-
-      - name: Final result
-        if: always()
-        run: |
-          if [ "${{ steps.run2.outcome }}" = "failure" ]; then exit 1; fi
-          if [ "${{ steps.run1.outcome }}" = "failure" ] && [ "${{ steps.run2.outcome }}" != "success" ]; then exit 1; fi
-          echo "OK"
+    uses: ./.github/workflows/android-test.yml
+    with:
+      apks-artifact: apks
+      devices: single
+      api-level: ${{ fromJSON(github.event.inputs.api_level || '34') }}
+      shards: 4
+      mode: ${{ github.event.inputs.mode || 'instrument' }}
+      events: ${{ fromJSON(github.event.inputs.events || '4000') }}
+      bot-repo: ${{ github.repository }}
+      bot-ref: ${{ github.sha }}

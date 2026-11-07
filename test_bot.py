@@ -99,6 +99,30 @@ def wait_for_boot(serial, timeout=600):
         time.sleep(3)
     raise SetupError(f"{serial} did not boot in {timeout}s")
 
+POPUP_WORDS = ("Not Responding", "isn't responding", "keeps stopping", "has stopped", "Application Error")
+
+def current_focus(serial):
+    out = adb(serial, "shell", "dumpsys window | grep -E 'mCurrentFocus'", timeout=30).stdout
+    return " ".join(out.split())[:200]
+
+def settle(serial, timeout=60):
+    """Close system popups ("System UI isn't responding", "Launcher keeps stopping", ...)
+    that steal focus from the app and make every UI test fail. Waits for the home screen."""
+    end, closed = time.time() + timeout, 0
+    while time.time() < end:
+        focus = current_focus(serial)
+        if any(w in focus for w in POPUP_WORDS):
+            log(f"{serial}: closing system popup: {focus}")
+            adb(serial, "shell", "am", "broadcast", "-a", "android.intent.action.CLOSE_SYSTEM_DIALOGS", timeout=30)
+            adb(serial, "shell", "input", "keyevent", "4", timeout=30)   # BACK = "wait" on ANR popups
+            closed += 1
+        elif "auncher" in focus:   # Launcher / NexusLauncher: home screen is up and has focus
+            return
+        else:
+            adb(serial, "shell", "input", "keyevent", "3", timeout=30)   # HOME
+        time.sleep(2)
+    log(f"{serial}: screen did not settle in {timeout}s (focus: {current_focus(serial)}); continuing")
+
 def stop_emulators(procs, serials):
     for s in serials:
         adb(s, "emu", "kill", timeout=30)
@@ -178,6 +202,9 @@ def run_shard(serial, runner, index, total, extra, results, out_dir):
     failed = [r for r in shard if r["status"] in ("failed", "error")]
     if failed:
         # "Class#method[param]" -> "Class#method" (the runner can't pick a single parameter)
+        if any("RootViewWithoutFocus" in r["details"] for r in failed):
+            log(f"{serial}: app window lost focus; screen shows: {current_focus(serial)}")
+        settle(serial, timeout=30)
         targets = sorted({r["name"].split("[")[0] for r in failed})
         log(f"{serial}: {len(failed)} failed, rerunning {len(targets)} test(s) once")
         rerun, _, _ = instrument(serial, runner, ["-e", "class", ",".join(targets)],
@@ -278,7 +305,38 @@ pre{{white-space:pre-wrap;margin:0;font-size:12px;max-height:200px;overflow:auto
 {('<h2>Screen at the end</h2>' + shots) if shots else ''}
 <table><tr><th>Test</th><th>Status</th><th>Device</th><th>Details</th></tr>{rows}</table>"""
     (out_dir / "report.html").write_text(page, encoding="utf-8")
+    write_junit(results, out_dir / "junit.xml", took)
     return counts
+
+def write_junit(results, path, took):
+    """Standard JUnit XML, readable by most CI tools and test dashboards."""
+    from xml.sax.saxutils import quoteattr, escape
+    by_device = {}
+    for r in results:
+        by_device.setdefault(r.get("device") or "device", []).append(r)
+    suites = []
+    for device, rs in by_device.items():
+        fails = sum(r["status"] == "failed" for r in rs)
+        errs = sum(r["status"] == "error" for r in rs)
+        skips = sum(r["status"] == "skipped" for r in rs)
+        cases = []
+        for r in rs:
+            cls, _, name = r["name"].rpartition("#")
+            attrs = f"classname={quoteattr(cls or 'bot')} name={quoteattr(name or r['name'])}"
+            body = ""
+            if r["status"] == "failed":
+                body = f"<failure message={quoteattr(first_line(r['details']))}>{escape(r['details'])}</failure>"
+            elif r["status"] == "error":
+                body = f"<error message={quoteattr(first_line(r['details']))}>{escape(r['details'])}</error>"
+            elif r["status"] == "skipped":
+                body = "<skipped/>"
+            elif r["status"] == "flaky":
+                body = f"<system-out>{escape('FLAKY: failed once, passed on retry.')}</system-out>"
+            cases.append(f"    <testcase {attrs}>{body}</testcase>")
+        suites.append(f"  <testsuite name={quoteattr(device)} tests=\"{len(rs)}\" failures=\"{fails}\" "
+                      f"errors=\"{errs}\" skipped=\"{skips}\">\n" + "\n".join(cases) + "\n  </testsuite>")
+    path.write_text(f'<?xml version="1.0" encoding="UTF-8"?>\n<testsuites time="{took}">\n'
+                    + "\n".join(suites) + "\n</testsuites>\n", encoding="utf-8")
 
 def print_problems(results, counts, label):
     bad = [r for r in results if r["status"] in ("failed", "error")]
@@ -342,6 +400,7 @@ def main():
             if a.test_apk:
                 install(s, a.test_apk)
             adb(s, "logcat", "-c", timeout=30)
+            settle(s)
         app_pkgs = third_party_packages(serials[0]) - before
 
         results = []

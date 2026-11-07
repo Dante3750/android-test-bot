@@ -1,71 +1,133 @@
 # Android Test Bot
 
-A bot that starts Android emulators, installs your app, runs your **whole** test suite (thousands of tests is fine), and gives you an HTML report.
+Tests your Android app on many Android versions and devices at once, on GitHub's servers, for free on public repos.
 
-It can run on your own PC, or on GitHub's servers with 4 emulators at once.
+It starts emulators, installs your app, runs your **whole** test suite (thousands of tests is fine), reruns failures to separate real bugs from flaky tests, and gives you one table of results.
 
-## Run it on GitHub (no setup on your PC)
+- **Android 7 to 16** (API 24–36) on phones, small phones, big phones and tablets
+- **Your Espresso / JUnit tests**, random-tap stress tests, or Maestro flows
+- **Big test suites split** across several emulators per device
+- **Clear results:** ✅ passed, ⚠️ flaky, ❌ failed, with the failing test names right on the run page
 
-1. Build your app: `./gradlew assembleDebug assembleDebugAndroidTest`
-2. Copy the APKs into the `apks/` folder of this repo:
-   - `app/build/outputs/apk/debug/app-debug.apk` → `apks/app.apk`
-   - `app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk` → `apks/test.apk` (only if you have tests)
-3. Commit and push. The tests start automatically.
-   You can also run them any time: **Actions** tab → **Android Tests** → **Run workflow**, then pick a mode.
-4. When it finishes, open the run and download the **test-report-part-0…3** files. Open `report.html` inside.
+## Use it in your app's repo
 
-Your tests are split across 4 emulators, so 4,000 tests run as 4 groups of about 1,000 at the same time.
-To use more, edit `part: [0, 1, 2, 3]` and `PARTS: 4` in `.github/workflows/android-tests.yml`.
+Add this file to your app repo as `.github/workflows/android-tests.yml`:
 
-## Test on many devices at once
+```yaml
+name: Android tests
 
-The **Android Matrix (many devices)** workflow tests your app on many Android versions and screen types.
-Actions tab → **Android Matrix (many devices)** → **Run workflow**, then pick:
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "30 21 * * *"   # every night at 03:00 India time (21:30 UTC)
+  workflow_dispatch:
 
-- **quick** (30 devices, ~20–30 min): every Android version from 7 to 16 on a normal phone, plus small phones, big phones and tablets on a spread of versions. Use this normally.
-- **full** (104 devices, 1–2 hours): 13 Android versions × 8 device types.
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+      - uses: gradle/actions/setup-gradle@v4
+      - name: Build app and tests
+        run: ./gradlew assembleDebug assembleDebugAndroidTest
+      - uses: actions/upload-artifact@v4
+        with:
+          name: apks
+          path: |
+            app/build/outputs/apk/debug/*.apk
+            app/build/outputs/apk/androidTest/debug/*.apk
 
-When it's done, the run page shows one table: ✅ passed, ⚠️ flaky, ❌ failed, with the names of the problem tests.
+  test:
+    needs: build
+    uses: Dante3750/android-test-bot/.github/workflows/android-test.yml@v1
+    with:
+      apks-artifact: apks
+      # Pull requests: one phone, tests split 4 ways (fast). Main branch and nightly: 30 devices.
+      devices: ${{ github.event_name == 'pull_request' && 'single' || 'quick' }}
+      shards: ${{ github.event_name == 'pull_request' && 4 || 1 }}
+```
+
+If your app module isn't called `app`, change the two `app/build/...` paths.
+
+That's it. Every push and pull request is tested, and every night the full quick set (30 devices) runs. GitHub emails you when a run fails.
+
+### Options
+
+| Option | Default | What it does |
+|---|---|---|
+| `apks-artifact` | (required) | Name of the artifact holding your APKs. The app APK and the `androidTest` APK are found automatically |
+| `devices` | `quick` | `quick` = 30 devices, `full` = 104, `single` = one Pixel 6 at `api-level`, or your own JSON list, e.g. `'[{"api":34,"device":"pixel_6"},{"api":35,"device":"pixel_tablet"}]'` |
+| `api-level` | `34` | Android version for `single` |
+| `shards` | `1` | Split each device's tests into this many emulators running at the same time (2–8 for big suites) |
+| `mode` | `instrument` | `instrument` (your androidTest tests), `monkey` (random taps), `maestro` (YAML flows) |
+| `events` | `4000` | Random taps per device in `monkey` mode |
+| `flows` | `flows` | Folder of Maestro flows in your repo |
+| `test-args` | | Extra runner options, e.g. `annotation=com.example.Smoke` or `class=com.example.LoginTest` |
+| `app-apk` / `test-apk` | auto | Exact APK file names, if auto-detection picks the wrong ones |
+| `max-parallel` | `20` | Most emulators at the same time |
+| `bot-ref` | `v1` | Bot version to use |
+
+The workflow also gives back `result` (`passed`, `flaky` or `failed`) if a later job wants to use it.
+
+### Quick vs full device lists
+
+- **quick (30):** every Android version 7–16 on a Pixel 6, plus a small phone (Pixel) on 7/9/12/14/16, a big phone (Pixel 7) on 13–16, a budget phone (Pixel 3a) on 8/10, an old tablet (Pixel C) on 7/9, and a new tablet (Pixel Tablet) on 11/13/15/16.
+- **full (104):** every Android version 7–16 × 8 device types.
+
+A free account runs about 20 emulators at a time. Quick takes about 20–30 minutes, full about 1–2 hours.
 
 ## How it handles problems
 
 - **Failed tests are rerun once.** If a test fails and then passes, it's marked ⚠️ *flaky*. That usually means a timing problem in the test, not a bug in your app. Flaky tests don't fail the run, but fix them when you can.
+- **System popups are closed** ("System UI isn't responding", "Launcher keeps stopping") before tests start, because they steal focus and make every UI test fail.
 - **Broken emulators are restarted.** If the emulator doesn't boot or the app install hangs (no tests ran), the job starts a fresh emulator and tries again once.
-- **Stuck installs fail fast.** An install gets 2 minutes, then one more try, instead of hanging for 10 minutes.
-- **Failing test names are shown** in the job log, in each job's summary, and in the matrix table, so you don't need to download reports to see what broke.
-- **A screenshot** of each device is saved in the report when something fails.
+- **Stuck installs fail fast:** 2 minutes, then one more try.
+- **Failing test names are shown** in the job log, in each job's summary, and in the results table.
+- **Reports for every device** can be downloaded from the run page: `report.html`, `results.json`, `junit.xml` (the standard format other tools read), logs, and a screenshot when something failed.
+
+## Common failures and what they mean
+
+| You see | It usually means |
+|---|---|
+| `NoMatchingViewException` only on Android 15+ | Android 15 draws apps edge-to-edge, under the status bar. Your top buttons are covered, so taps miss. Handle window insets (the sample app shows how) |
+| `RootViewWithoutFocusException` on every UI test | A system popup covered the app. The bot closes known popups; if it still happens, the job log says what was on screen |
+| ⚠️ flaky on slow devices | The test depends on timing. Wait for the condition with Espresso idling resources, not fixed sleeps |
+| ❌ did not start | The emulator never booted, even after a restart. Usually a GitHub problem; rerun the job |
+
+## Try it in this repo
+
+This repo has a small sample app (`sample-app/`, 406 tests). With no `apks/app.apk`, the workflows build and test it:
+
+- **Android Tests:** the sample app on one Android version, split across 4 emulators. Runs on every push to `apks/` or `sample-app/`.
+- **Android Matrix (many devices):** `quick` or `full`, from the Actions tab → Run workflow.
+
+To test another app here without changing its repo, put `app.apk` (and `test.apk`) in `apks/` and push.
 
 ## Run it on your PC
 
-Needs Android Studio (with an emulator created in Device Manager) and Python 3.
-Set `ANDROID_HOME` to your Android SDK folder.
+Needs Android Studio (with an emulator created in Device Manager) and Python 3. Set `ANDROID_HOME` to your Android SDK folder.
 
 ```bash
 # Your Espresso / JUnit tests, split across 4 emulators
-python test_bot.py instrument --apk apks/app.apk --test-apk apks/test.apk --avd Pixel_7 --emulators 4
+python test_bot.py instrument --apk app.apk --test-apk app-androidTest.apk --avd Pixel_7 --emulators 4
 
 # 4000 random taps/swipes to find crashes (no test code needed)
-python test_bot.py monkey --apk apks/app.apk --avd Pixel_7 --events 4000
+python test_bot.py monkey --apk app.apk --avd Pixel_7 --events 4000
 
 # Maestro flows (put .yaml files in flows/)
-python test_bot.py maestro --apk apks/app.apk --flows flows --avd Pixel_7 --emulators 2
+python test_bot.py maestro --apk app.apk --flows flows --avd Pixel_7 --emulators 2
 ```
 
-Leave out `--avd` to use an emulator or phone that's already running.
-Add `--show` to see the emulator windows.
-Run only some tests: `--arg class=com.example.LoginTest`
+Leave out `--avd` to use an emulator or phone that's already running. Add `--show` to see the emulator windows. Run only some tests with `--arg class=com.example.LoginTest`.
 
-Results go to `test-results/<date>/`: `report.html`, `results.json`, and logs for each device.
-Exit code: `0` all passed (flaky allowed), `1` tests failed, `3` setup problem (device or install).
+Results go to `test-results/<date>/`. Exit code: `0` all passed (flaky allowed), `1` tests failed, `3` setup problem (device or install).
 
-## Modes
+## Working on the bot
 
-| Mode | What it does | Needs |
-|---|---|---|
-| `instrument` | Runs your androidTest tests (Espresso, UI Automator, JUnit) | app APK + test APK |
-| `monkey` | Random taps and swipes; fails if the app crashes or freezes | app APK only |
-| `maestro` | Runs simple YAML test flows | app APK + `flows/*.yaml`, [Maestro](https://maestro.mobile.dev) |
-
-## Note on GitHub minutes
-
-Public repos get free Actions minutes. Private repos have a monthly free limit, and 4 emulators use 4× the minutes, so check **Settings → Billing** if you run it a lot.
+`python -m pytest tests -q` runs the bot's self-tests against a fake device in a few seconds. The **Bot self-check** workflow runs them, plus a lint of every workflow, on every push.
