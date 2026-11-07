@@ -1,0 +1,67 @@
+name: Android Tests
+
+# Runs the test bot on GitHub's servers.
+# Put your APKs in the apks/ folder first (see apks/README.md),
+# then go to the Actions tab -> "Android Tests" -> "Run workflow".
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "What to run"
+        type: choice
+        options: [instrument, monkey, maestro]
+        default: instrument
+      events:
+        description: "Random events per emulator (monkey mode)"
+        default: "4000"
+      api_level:
+        description: "Android API level"
+        default: "34"
+  push:
+    paths:
+      - "apks/**"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        part: [0, 1, 2, 3]   # 4 emulators in parallel; add numbers for more
+    env:
+      MODE: ${{ github.event.inputs.mode || 'instrument' }}
+      EVENTS: ${{ github.event.inputs.events || '4000' }}
+      PARTS: 4             # keep equal to how many numbers are in "part" above
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Enable KVM (fast emulator)
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+
+      - name: Install Maestro
+        if: env.MODE == 'maestro'
+        run: |
+          curl -Ls "https://get.maestro.mobile.dev" | bash
+          echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
+
+      - name: Run test bot on emulator
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ github.event.inputs.api_level || '34' }}
+          arch: x86_64
+          target: google_apis
+          disable-animations: true
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
+          script: python3 test_bot.py ${{ env.MODE }} --apk apks/app.apk $( [ -f apks/test.apk ] && echo --test-apk apks/test.apk ) --flows flows --events ${{ env.EVENTS }} --shard ${{ matrix.part }}/${{ env.PARTS }} --out test-results
+
+      - name: Upload report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-report-part-${{ matrix.part }}
+          path: test-results/
