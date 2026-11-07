@@ -17,14 +17,23 @@ It can run on your own PC, or on GitHub's servers with 4 emulators at once.
 Your tests are split across 4 emulators, so 4,000 tests run as 4 groups of about 1,000 at the same time.
 To use more, edit `part: [0, 1, 2, 3]` and `PARTS: 4` in `.github/workflows/android-tests.yml`.
 
-## Test on 104 devices at once
+## Test on many devices at once
 
-The **Android Matrix (104 devices)** workflow runs your app on 13 Android versions
-(Android 7 to 16, API 24–36) × 8 device types (small and large phones, tablets).
-Actions tab → **Android Matrix (104 devices)** → **Run workflow**.
+The **Android Matrix (many devices)** workflow tests your app on many Android versions and screen types.
+Actions tab → **Android Matrix (many devices)** → **Run workflow**, then pick:
 
-When it's done, the run page shows one table with ✅ or ❌ for every device, and you can download each device's report.
-A free account runs about 20 emulators at a time, so all 104 take roughly 1–2 hours.
+- **quick** (30 devices, ~20–30 min): every Android version from 7 to 16 on a normal phone, plus small phones, big phones and tablets on a spread of versions. Use this normally.
+- **full** (104 devices, 1–2 hours): 13 Android versions × 8 device types.
+
+When it's done, the run page shows one table: ✅ passed, ⚠️ flaky, ❌ failed, with the names of the problem tests.
+
+## How it handles problems
+
+- **Failed tests are rerun once.** If a test fails and then passes, it's marked ⚠️ *flaky*. That usually means a timing problem in the test, not a bug in your app. Flaky tests don't fail the run, but fix them when you can.
+- **Broken emulators are restarted.** If the emulator doesn't boot or the app install hangs (no tests ran), the job starts a fresh emulator and tries again once.
+- **Stuck installs fail fast.** An install gets 2 minutes, then one more try, instead of hanging for 10 minutes.
+- **Failing test names are shown** in the job log, in each job's summary, and in the matrix table, so you don't need to download reports to see what broke.
+- **A screenshot** of each device is saved in the report when something fails.
 
 ## Run it on your PC
 
@@ -47,6 +56,7 @@ Add `--show` to see the emulator windows.
 Run only some tests: `--arg class=com.example.LoginTest`
 
 Results go to `test-results/<date>/`: `report.html`, `results.json`, and logs for each device.
+Exit code: `0` all passed (flaky allowed), `1` tests failed, `3` setup problem (device or install).
 
 ## Modes
 

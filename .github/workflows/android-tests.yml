@@ -1,8 +1,8 @@
 name: Android Tests
 
-# Runs the test bot on GitHub's servers.
-# Put your APKs in the apks/ folder first (see apks/README.md),
-# then go to the Actions tab -> "Android Tests" -> "Run workflow".
+# Runs your whole test suite split across 4 emulators at the same time.
+# Put your APKs in the apks/ folder (see apks/README.md), or leave it empty to test the sample app.
+# Runs on every push to apks/ or sample-app/, or: Actions tab -> "Android Tests" -> "Run workflow".
 
 on:
   workflow_dispatch:
@@ -56,6 +56,7 @@ jobs:
 
   test:
     needs: build
+    name: Part ${{ matrix.part }} of 4
     runs-on: ubuntu-latest
     timeout-minutes: 180
     strategy:
@@ -65,7 +66,9 @@ jobs:
     env:
       MODE: ${{ github.event.inputs.mode || 'instrument' }}
       EVENTS: ${{ github.event.inputs.events || '4000' }}
+      PART: ${{ matrix.part }}
       PARTS: 4             # keep equal to how many numbers are in "part" above
+      DEVICE_LABEL: Part ${{ matrix.part }} (API ${{ github.event.inputs.api_level || '34' }})
     steps:
       - uses: actions/checkout@v6
 
@@ -86,15 +89,32 @@ jobs:
           curl -Ls "https://get.maestro.mobile.dev" | bash
           echo "$HOME/.maestro/bin" >> "$GITHUB_PATH"
 
-      - name: Run test bot on emulator
+      - name: Run test bot
+        id: run1
+        continue-on-error: true
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: ${{ github.event.inputs.api_level || '34' }}
-          arch: x86_64
           target: google_apis
+          arch: x86_64
           disable-animations: true
+          emulator-boot-timeout: 300
           emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim
-          script: python3 test_bot.py ${{ env.MODE }} --apk apks/app.apk $( [ -f apks/test.apk ] && echo --test-apk apks/test.apk ) --flows flows --events ${{ env.EVENTS }} --shard ${{ matrix.part }}/${{ env.PARTS }} --out test-results
+          script: python3 test_bot.py $MODE --apk apks/app.apk --test-apk apks/test.apk --flows flows --events $EVENTS --shard $PART/$PARTS --out test-results
+
+      # If the emulator never started or the install broke (no tests ran), start a fresh emulator once.
+      - name: Retry with a fresh emulator
+        id: run2
+        if: steps.run1.outcome == 'failure' && hashFiles('test-results/TESTS_RAN') == ''
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: ${{ github.event.inputs.api_level || '34' }}
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          emulator-boot-timeout: 300
+          emulator-options: -no-window -gpu swiftshader_indirect -no-snapshot -noaudio -no-boot-anim -wipe-data
+          script: rm -rf test-results && python3 test_bot.py $MODE --apk apks/app.apk --test-apk apks/test.apk --flows flows --events $EVENTS --shard $PART/$PARTS --out test-results
 
       - name: Upload report
         if: always()
@@ -102,3 +122,10 @@ jobs:
         with:
           name: test-report-part-${{ matrix.part }}
           path: test-results/
+
+      - name: Final result
+        if: always()
+        run: |
+          if [ "${{ steps.run2.outcome }}" = "failure" ]; then exit 1; fi
+          if [ "${{ steps.run1.outcome }}" = "failure" ] && [ "${{ steps.run2.outcome }}" != "success" ]; then exit 1; fi
+          echo "OK"
